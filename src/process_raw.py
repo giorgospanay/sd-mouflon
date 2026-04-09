@@ -385,10 +385,10 @@ def _find_median_age_pokec():
 if __name__ == '__main__':
 	### Processing raw data to NetworkX objects with node color attributes
 
-	process_facebook()
-	#process_deezer()
-	#process_twitch()
-	#process_pokec()
+	# process_facebook()
+	# process_deezer()
+	# process_twitch()
+	# process_pokec()
 	# process_proximity()
 
 
@@ -419,8 +419,8 @@ if __name__ == '__main__':
 	# print(f"Pokec-g N={pokec_g.number_of_nodes()}, M={pokec_g.number_of_edges()}")
 	# print(f"Pokec-a N={pokec_a.number_of_nodes()}, M={pokec_a.number_of_edges()}")
 
-	prox_c=None
-	with open(f"{obj_path}/prox_c.nx","rb") as g_open:
-		prox_c=pickle.load(g_open)
-	print(f"Proximity-c N={prox_c.number_of_nodes()}, M={prox_c.number_of_edges()}")
+	# prox_c=None
+	# with open(f"{obj_path}/prox_c.nx","rb") as g_open:
+	# 	prox_c=pickle.load(g_open)
+	# print(f"Proximity-c N={prox_c.number_of_nodes()}, M={prox_c.number_of_edges()}")
 
