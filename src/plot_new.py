@@ -413,39 +413,151 @@ def _quality_2row(fig, axs_top, axs_bot, dfs, x_col,
 			tax.set_ylim(*target_lim)
 
 
+def _plot_3col_2row(row_specs, x_col, xlabel, draw_error,
+					nc_ylim=None, ami_ylim=None, filename="figure"):
+	"""
+	Generic 2-row × 3-col figure for figs 4-9.
+
+	row_specs : list of 2 dicts, each with keys:
+	  'label'     : str   — row label (A / B), used as bold left annotation
+	  'df'        : DataFrame for this row
+	  'draw_qf'   : callable(ax, df) — draws Q+F lines onto ax
+	  'has_ami'   : bool
+	  'has_nf1'   : bool
+	  'draw_ami'  : callable(ax, df) — draws AMI/NF1 onto ax (right axis already set up)
+	  'nc_ylim'   : optional (lo, hi) override for this row's ncomms axis
+
+	Columns:
+	  col 0  — Q vs F  (Score, y in [0,1])
+	  col 1  — Number of communities
+	  col 2  — AMI / NF1  (y in [0,1])  or blank if neither present
+	"""
+	import string
+	sns.set_style("whitegrid")
+
+	n_rows = len(row_specs)
+
+	fig, axs = plt.subplots(n_rows, 3,
+							figsize=(3 * COL_W, n_rows * COL_H * 0.85),
+							sharey="col")
+	axs = np.array(axs).reshape(n_rows, 3)
+
+	# Shared ncomms range across all rows (col 1 shares y via sharey="col")
+	if nc_ylim is None:
+		all_nc_hi = 1.0
+		for rs in row_specs:
+			df = rs["df"]
+			if "ncomms" in df.columns and not df["ncomms"].isna().all():
+				std = df["ncomms_std"] if "ncomms_std" in df.columns else pd.Series(0, index=df.index)
+				all_nc_hi = max(all_nc_hi, (df["ncomms"] + std).max())
+		nc_pad = max(all_nc_hi * 0.08, 0.5)
+		nc_ylim_use = (-nc_pad, all_nc_hi + nc_pad)
+	else:
+		nc_ylim_use = nc_ylim
+
+	ami_ylim_use = ami_ylim if ami_ylim is not None else _padded_01_lim()
+
+	any_ami = any(rs.get("has_ami", False) for rs in row_specs)
+	any_nf1 = any(rs.get("has_nf1", False) for rs in row_specs)
+
+	for row_idx, rs in enumerate(row_specs):
+		df        = rs["df"]
+		is_bottom = (row_idx == n_rows - 1)
+
+		ax0 = axs[row_idx, 0]
+		ax1 = axs[row_idx, 1]
+		ax2 = axs[row_idx, 2]
+
+		# Row panel letter
+		ax0.text(-0.18, 0.5, rs["label"],
+				 transform=ax0.transAxes,
+				 fontsize=11, fontweight="bold",
+				 va="center", ha="center")
+
+		# ── col 0: Q vs F ──────────────────────────────────────────────────
+		rs["draw_qf"](ax0, df)
+		x_ticks = sorted(df[x_col].unique())
+		ax0.set_xticks(x_ticks)
+		ax0.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+		ax0.margins(x=0.05)
+		ax0.set_ylim(*_padded_01_lim())
+		ax0.autoscale(enable=False, axis="y")
+		ax0.set_ylabel("Score")
+		if is_bottom:
+			ax0.set_xlabel(xlabel)
+
+		# ── col 1: Number of communities ───────────────────────────────────
+		row_nc_ylim = rs.get("nc_ylim", nc_ylim_use)
+		ax1.plot(df[x_col], df["ncomms"], **STYLE["ncomms"])
+		if draw_error and "ncomms_std" in df.columns:
+			ax1.errorbar(df[x_col], df["ncomms"], yerr=df["ncomms_std"],
+						 fmt="none", ecolor=STYLE["ncomms"]["color"], capsize=2)
+		ax1.set_xticks(x_ticks)
+		ax1.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+		ax1.margins(x=0.05)
+		ax1.set_ylim(*row_nc_ylim)
+		ax1.autoscale(enable=False, axis="y")
+		ax1.set_ylabel("Number of communities")
+		if is_bottom:
+			ax1.set_xlabel(xlabel)
+
+		# ── col 2: AMI / NF1 ───────────────────────────────────────────────
+		if any_ami or any_nf1:
+			if rs.get("has_ami", False) or rs.get("has_nf1", False):
+				rs["draw_ami"](ax2, df)
+			ax2.set_xticks(x_ticks)
+			ax2.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+			ax2.margins(x=0.05)
+			ax2.set_ylim(*ami_ylim_use)
+			ax2.autoscale(enable=False, axis="y")
+			ax2.set_ylabel("AMI / NF1")
+			if is_bottom:
+				ax2.set_xlabel(xlabel)
+		else:
+			ax2.set_visible(False)
+
+	return fig, axs
+
+
 def plot_mouflon_alpha(net_node, net_full, draw_error=True, filename="Figure4"):
-	"""Left = node-coloured (hybrid), right = comm-coloured (hybrid)."""
+	"""Rows A/B = node-coloured / comm-coloured (hybrid). Cols = Q+F | ncomms | AMI+NF1."""
 	df1 = pd.read_csv(f"{log_path}/{net_node}.csv")
 	df2 = pd.read_csv(f"{log_path}/{net_full}.csv")
 	df1 = df1[df1["strategy"] == "hybrid"]
 	df2 = df2[df2["strategy"] == "hybrid"]
 
-	sns.set_style("whitegrid")
-	fig, axs = plt.subplots(2, 2,
-							figsize=(2 * COL_W, 2 * COL_H),
-							sharex="col", sharey="row")
-	axs_top = axs[0]
-	axs_bot = axs[1]
-
-	inset_lo, inset_hi = get_ncomms_limits([df1, df2])
-
-	def _top(ax, df):
+	def _qf(ax, df):
 		ax.plot(df["alpha"], df["modularity"], **STYLE["modularity"])
-		if draw_error:
+		if draw_error and "modularity_std" in df.columns:
 			ax.errorbar(df["alpha"], df["modularity"], yerr=df["modularity_std"],
 						fmt="none", ecolor=STYLE["modularity"]["color"], capsize=2)
 		ax.plot(df["alpha"], df["fair_exp"], **STYLE["prop_mouflon"])
-		if draw_error:
+		if draw_error and "fair_exp_std" in df.columns:
 			ax.errorbar(df["alpha"], df["fair_exp"], yerr=df["fair_exp_std"],
 						fmt="none", ecolor=STYLE["prop_mouflon"]["color"], capsize=2)
-		ax.set_ylabel("Score")
 
-	_quality_2row(fig, axs_top, axs_bot, [df1, df2],
-				  "alpha", _top, inset_lo, inset_hi, draw_error,
-				  nc_ylim=None,
-				  ami_ylim=_padded_01_lim(),
-				  xlabel="alpha",
-				  panel_labels=["A", "B"])
+	def _ami(ax, df):
+		if _has_meaningful(df, "ami"):
+			ax.plot(df["alpha"], df["ami"], **STYLE["ami"])
+			if draw_error and "ami_std" in df.columns:
+				ax.errorbar(df["alpha"], df["ami"], yerr=df["ami_std"],
+							fmt="none", ecolor=STYLE["ami"]["color"], capsize=2)
+		if _has_meaningful(df, "nf1"):
+			ax.plot(df["alpha"], df["nf1"], **STYLE["nf1"])
+			if draw_error and "nf1_std" in df.columns:
+				ax.errorbar(df["alpha"], df["nf1"], yerr=df["nf1_std"],
+							fmt="none", ecolor=STYLE["nf1"]["color"], capsize=2)
+
+	row_specs = [
+		{"label": "A", "df": df1, "draw_qf": _qf,
+		 "has_ami": _has_meaningful(df1, "ami"), "has_nf1": _has_meaningful(df1, "nf1"),
+		 "draw_ami": _ami},
+		{"label": "B", "df": df2, "draw_qf": _qf,
+		 "has_ami": _has_meaningful(df2, "ami"), "has_nf1": _has_meaningful(df2, "nf1"),
+		 "draw_ami": _ami},
+	]
+	fig, axs = _plot_3col_2row(row_specs, "alpha", "alpha", draw_error,
+							   filename=filename)
 	handles = [
 		mlines.Line2D([], [], **STYLE["modularity"]),
 		mlines.Line2D([], [], **STYLE["prop_mouflon"]),
@@ -454,8 +566,8 @@ def plot_mouflon_alpha(net_node, net_full, draw_error=True, filename="Figure4"):
 		mlines.Line2D([], [], **STYLE["nf1"]),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=5, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=5, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -471,18 +583,9 @@ def load_and_prepare(files):
 
 
 def plot_mouflon_psensitive(file_list1, file_list2, draw_error=True, filename="Figure5"):
-	"""Left = node-coloured (hybrid), right = comm-coloured (hybrid)."""
+	"""Rows A/B = node-coloured / comm-coloured (hybrid). Cols = Q+F | ncomms | AMI+NF1."""
 	df1 = load_and_prepare(file_list1)
 	df2 = load_and_prepare(file_list2)
-
-	sns.set_style("whitegrid")
-	fig, axs = plt.subplots(2, 2,
-							figsize=(2 * COL_W, 2 * COL_H),
-							sharex="col", sharey="row")
-	axs_top = axs[0]
-	axs_bot = axs[1]
-
-	inset_lo, inset_hi = get_ncomms_limits([df1, df2])
 
 	metric_styles = {
 		"modularity": STYLE["modularity"],
@@ -490,26 +593,38 @@ def plot_mouflon_psensitive(file_list1, file_list2, draw_error=True, filename="F
 		"fair_bal":   {**STYLE["balance_mouflon"], "label": "balance", "alpha": 0.5},
 	}
 
-	def _top(ax, df):
+	def _qf(ax, df):
 		for metric, s in metric_styles.items():
 			sc = s.copy()
 			ax.plot(df["p_sensitive"], df[metric], **sc)
-			if draw_error:
+			if draw_error and f"{metric}_std" in df.columns:
 				ax.errorbar(df["p_sensitive"], df[metric],
 							yerr=df[f"{metric}_std"], fmt="none",
 							ecolor=sc.get("color", "black"), capsize=2,
 							alpha=sc.get("alpha", 1.0))
-		ax.set_ylabel("Score")
 
-	_quality_2row(fig, axs_top, axs_bot, [df1, df2],
-				  "p_sensitive", _top, inset_lo, inset_hi, draw_error,
-				  xlabel="p_sensitive",
-				  panel_labels=["A", "B"])
+	def _ami(ax, df):
+		if _has_meaningful(df, "ami"):
+			ax.plot(df["p_sensitive"], df["ami"], **STYLE["ami"])
+			if draw_error and "ami_std" in df.columns:
+				ax.errorbar(df["p_sensitive"], df["ami"], yerr=df["ami_std"],
+							fmt="none", ecolor=STYLE["ami"]["color"], capsize=2)
+		if _has_meaningful(df, "nf1"):
+			ax.plot(df["p_sensitive"], df["nf1"], **STYLE["nf1"])
+			if draw_error and "nf1_std" in df.columns:
+				ax.errorbar(df["p_sensitive"], df["nf1"], yerr=df["nf1_std"],
+							fmt="none", ecolor=STYLE["nf1"]["color"], capsize=2)
 
-	## added
-	for ax in axs_bot:
-		ax.set_ylim(-0.5, 10.5)
-
+	row_specs = [
+		{"label": "A", "df": df1, "draw_qf": _qf,
+		 "has_ami": _has_meaningful(df1, "ami"), "has_nf1": _has_meaningful(df1, "nf1"),
+		 "draw_ami": _ami, "nc_ylim": (-0.5, 10.5)},
+		{"label": "B", "df": df2, "draw_qf": _qf,
+		 "has_ami": _has_meaningful(df2, "ami"), "has_nf1": _has_meaningful(df2, "nf1"),
+		 "draw_ami": _ami, "nc_ylim": (-0.5, 10.5)},
+	]
+	fig, axs = _plot_3col_2row(row_specs, "p_sensitive", "p_sensitive", draw_error,
+							   nc_ylim=(-0.5, 10.5), filename=filename)
 	handles = [
 		mlines.Line2D([], [], **STYLE["modularity"]),
 		mlines.Line2D([], [], color=STYLE["prop_mouflon"]["color"],
@@ -524,8 +639,8 @@ def plot_mouflon_psensitive(file_list1, file_list2, draw_error=True, filename="F
 		mlines.Line2D([], [], **STYLE["nf1"]),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=3, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=3, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -576,8 +691,8 @@ def plot_strategies_alpha(net_node, draw_error=True, filename="Figure6"):
 		mlines.Line2D([], [], **STYLE["nf1"]),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=3, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=3, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -636,8 +751,8 @@ def plot_strategies_psensitive(files, draw_error=True, filename="Figure7"):
 		mlines.Line2D([], [], **STYLE["nf1"]),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=3, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=3, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -647,109 +762,121 @@ def plot_strategies_psensitive(files, draw_error=True, filename="Figure7"):
 
 def plot_step2_combined(net_node, node_files, draw_error=True, filename="Figure8"):
 	"""
-	2x2 figure showing step2 (balance) only.
-	Left column  : alpha sweep    (x = alpha,       fixed p_sensitive network c05)
-	Right column : p_sensitive sweep (x = p_sensitive, fixed alpha = 0.5)
-	Row 1: modularity + balance fairness.
-	Row 2: number of communities + AMI/NF1.
-	No prop_balance lines.
+	2-row × 3-col figure: step2 (balance) only.
+	  Row A : alpha sweep       (x = alpha,       fixed p_sensitive c05)
+	  Row B : p_sensitive sweep (x = p_sensitive, fixed alpha = 0.5)
+	  Cols  : Q+F | ncomms | AMI+NF1
 	"""
-	# Alpha sweep data
 	df_alpha = pd.read_csv(f"{log_path}/{net_node}.csv")
 	df_alpha = df_alpha[df_alpha["strategy"] == "step2"]
 
-	# p_sensitive sweep data
-	rows = []
+	rows_list = []
 	for f in node_files:
 		df = pd.read_csv(f)
 		p  = extract_p_sensitive(f)
 		df = df[(df["strategy"] == "step2") & (df["alpha"] == 0.5)].copy()
 		df["p_sensitive"] = p
-		rows.append(df)
-	df_psens = pd.concat(rows, ignore_index=True).sort_values("p_sensitive")
+		rows_list.append(df)
+	df_psens = pd.concat(rows_list, ignore_index=True).sort_values("p_sensitive")
 
-	sns.set_style("whitegrid")
-	fig, axs = plt.subplots(2, 2,
-							figsize=(2 * COL_W, 2 * COL_H),
-							sharey="row")
-	# Top-left: alpha sweep score
-	# Top-right: p_sensitive sweep score
-	# Bot-left: alpha sweep ncomms+AMI
-	# Bot-right: p_sensitive sweep ncomms+AMI
+	def _make_qf(x_col):
+		def _qf(ax, df):
+			ax.plot(df[x_col], df["modularity"], **STYLE["modularity"])
+			if draw_error and "modularity_std" in df.columns:
+				ax.errorbar(df[x_col], df["modularity"], yerr=df["modularity_std"],
+							fmt="none", ecolor=STYLE["modularity"]["color"], capsize=2)
+			ax.plot(df[x_col], df["fair_bal"], **STYLE["balance_mouflon"])
+			if draw_error and "fair_bal_std" in df.columns:
+				ax.errorbar(df[x_col], df["fair_bal"], yerr=df["fair_bal_std"],
+							fmt="none", ecolor=STYLE["balance_mouflon"]["color"], capsize=2)
+		return _qf
 
-	def _draw_top(ax, df, x_col):
-		ax.plot(df[x_col], df["modularity"], **STYLE["modularity"])
-		if draw_error and "modularity_std" in df.columns:
-			ax.errorbar(df[x_col], df["modularity"], yerr=df["modularity_std"],
-						fmt="none", ecolor=STYLE["modularity"]["color"], capsize=2)
-		ax.plot(df[x_col], df["fair_bal"], **STYLE["balance_mouflon"])
-		if draw_error and "fair_bal_std" in df.columns:
-			ax.errorbar(df[x_col], df["fair_bal"], yerr=df["fair_bal_std"],
-						fmt="none", ecolor=STYLE["balance_mouflon"]["color"], capsize=2)
-		ax.margins(x=0.05)
-		ax.set_ylim(*_padded_01_lim())
-		ax.autoscale(enable=False, axis="y")
-		ax.set_ylabel("Score")
-
-	def _draw_bot(ax, df, x_col, xlabel):
-		nc_max = (df["ncomms"] + df.get("ncomms_std",
-				  pd.Series(0, index=df.index))).max()
-		nc_pad = max(nc_max * 0.08, 0.5)
-		ax.plot(df[x_col], df["ncomms"], **STYLE["ncomms"])
-		if draw_error and "ncomms_std" in df.columns:
-			ax.errorbar(df[x_col], df["ncomms"], yerr=df["ncomms_std"],
-						fmt="none", ecolor=STYLE["ncomms"]["color"], capsize=2)
-		ax.set_xticks(sorted(df[x_col].unique()))
-		ax.set_xticklabels([f"{v:g}" for v in sorted(df[x_col].unique())])
-		ax.tick_params(axis="x", labelbottom=True)
-		for lbl in ax.get_xticklabels():
-			lbl.set_visible(True)
-		ax.set_xlabel(xlabel)
-		ax.margins(x=0.05)
-		ax.set_ylim(-nc_pad, nc_max + nc_pad)
-		ax.autoscale(enable=False, axis="y")
-		ax.tick_params(axis="y")
-		ax.set_ylabel("Number of communities")
-
-		has_ami = _has_meaningful(df, "ami")
-		has_nf1 = _has_meaningful(df, "nf1")
-		if has_ami or has_nf1:
-			ax2 = ax.twinx()
-			ax2.set_ylim(*_padded_01_lim())
-			ax2.set_yticks([round(v * 0.1, 1) for v in range(0, 11)])
-			ax2.set_ylabel("AMI / NF1")
-			ax2.tick_params(axis="y")
-			ax2.grid(False)
-			if has_ami:
-				ax2.plot(df[x_col], df["ami"], **STYLE["ami"])
+	def _make_ami(x_col):
+		def _ami(ax, df):
+			if _has_meaningful(df, "ami"):
+				ax.plot(df[x_col], df["ami"], **STYLE["ami"])
 				if draw_error and "ami_std" in df.columns:
-					ax2.errorbar(df[x_col], df["ami"], yerr=df["ami_std"],
-								 fmt="none", ecolor=STYLE["ami"]["color"], capsize=2)
-			if has_nf1:
-				ax2.plot(df[x_col], df["nf1"], **STYLE["nf1"])
+					ax.errorbar(df[x_col], df["ami"], yerr=df["ami_std"],
+								fmt="none", ecolor=STYLE["ami"]["color"], capsize=2)
+			if _has_meaningful(df, "nf1"):
+				ax.plot(df[x_col], df["nf1"], **STYLE["nf1"])
 				if draw_error and "nf1_std" in df.columns:
-					ax2.errorbar(df[x_col], df["nf1"], yerr=df["nf1_std"],
-								 fmt="none", ecolor=STYLE["nf1"]["color"], capsize=2)
-
-	# Fill panels
-	_draw_top(axs[0, 0], df_alpha, "alpha")
-	_draw_top(axs[0, 1], df_psens, "p_sensitive")
-	_draw_bot(axs[1, 0], df_alpha, "alpha", "alpha")
-	_draw_bot(axs[1, 1], df_psens, "p_sensitive", "p_sensitive")
-
-	# Hide x tick labels on top row
-	for ax in axs[0]:
-		ax.set_xticks(sorted(df_alpha["alpha"].unique()
-							 if ax is axs[0, 0] else df_psens["p_sensitive"].unique()))
-		ax.set_xticklabels([])
-
-	# Panel labels
-	for i, (ax, label) in enumerate(zip(axs[0], ["A", "B"])):
-		ax.text(0.02, 0.97, label, transform=ax.transAxes,
-				fontsize=10, fontweight="bold", va="top", ha="left")
+					ax.errorbar(df[x_col], df["nf1"], yerr=df["nf1_std"],
+								fmt="none", ecolor=STYLE["nf1"]["color"], capsize=2)
+		return _ami
 
 	has_ami_any = _has_meaningful(df_alpha, "ami") or _has_meaningful(df_psens, "ami")
 	has_nf1_any = _has_meaningful(df_alpha, "nf1") or _has_meaningful(df_psens, "nf1")
+
+	row_specs = [
+		{"label": "A", "df": df_alpha, "x_col": "alpha",
+		 "draw_qf": _make_qf("alpha"), "draw_ami": _make_ami("alpha"),
+		 "has_ami": _has_meaningful(df_alpha, "ami"),
+		 "has_nf1": _has_meaningful(df_alpha, "nf1")},
+		{"label": "B", "df": df_psens, "x_col": "p_sensitive",
+		 "draw_qf": _make_qf("p_sensitive"), "draw_ami": _make_ami("p_sensitive"),
+		 "has_ami": _has_meaningful(df_psens, "ami"),
+		 "has_nf1": _has_meaningful(df_psens, "nf1")},
+	]
+
+	# Build figure manually since rows have different x_cols
+	sns.set_style("whitegrid")
+	fig, axs = plt.subplots(2, 3, figsize=(3 * COL_W, 2 * COL_H * 0.85))
+	axs = np.array(axs).reshape(2, 3)
+
+	nc_hi_all = max(
+		(df_alpha["ncomms"] + df_alpha.get("ncomms_std", pd.Series(0, index=df_alpha.index))).max(),
+		(df_psens["ncomms"] + df_psens.get("ncomms_std", pd.Series(0, index=df_psens.index))).max(),
+	)
+	nc_pad = max(nc_hi_all * 0.08, 0.5)
+
+	for row_idx, rs in enumerate(row_specs):
+		df      = rs["df"]
+		x_col   = rs["x_col"]
+		xlabel  = x_col
+		x_ticks = sorted(df[x_col].unique())
+		is_bottom = (row_idx == 1)
+
+		ax0, ax1, ax2 = axs[row_idx]
+		ax0.text(-0.18, 0.5, rs["label"], transform=ax0.transAxes,
+				 fontsize=11, fontweight="bold", va="center", ha="center")
+
+		rs["draw_qf"](ax0, df)
+		ax0.set_xticks(x_ticks)
+		ax0.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+		ax0.margins(x=0.05)
+		ax0.set_ylim(*_padded_01_lim())
+		ax0.autoscale(enable=False, axis="y")
+		ax0.set_ylabel("Score")
+		if is_bottom:
+			ax0.set_xlabel(xlabel)
+
+		ax1.plot(df[x_col], df["ncomms"], **STYLE["ncomms"])
+		if draw_error and "ncomms_std" in df.columns:
+			ax1.errorbar(df[x_col], df["ncomms"], yerr=df["ncomms_std"],
+						 fmt="none", ecolor=STYLE["ncomms"]["color"], capsize=2)
+		ax1.set_xticks(x_ticks)
+		ax1.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+		ax1.margins(x=0.05)
+		ax1.set_ylim(-nc_pad, nc_hi_all + nc_pad)
+		ax1.autoscale(enable=False, axis="y")
+		ax1.set_ylabel("Number of communities")
+		if is_bottom:
+			ax1.set_xlabel(xlabel)
+
+		if has_ami_any or has_nf1_any:
+			rs["draw_ami"](ax2, df)
+			ax2.set_xticks(x_ticks)
+			ax2.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+			ax2.margins(x=0.05)
+			ax2.set_ylim(*_padded_01_lim())
+			ax2.autoscale(enable=False, axis="y")
+			ax2.set_ylabel("AMI / NF1")
+			if is_bottom:
+				ax2.set_xlabel(xlabel)
+		else:
+			ax2.set_visible(False)
+
 	handles = [
 		mlines.Line2D([], [], **STYLE["modularity"]),
 		mlines.Line2D([], [], **STYLE["balance_mouflon"]),
@@ -759,10 +886,9 @@ def plot_step2_combined(net_node, node_files, draw_error=True, filename="Figure8
 		handles.append(mlines.Line2D([], [], **STYLE["ami"]))
 	if has_nf1_any:
 		handles.append(mlines.Line2D([], [], **STYLE["nf1"]))
-
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=len(handles), bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=len(handles), bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -774,11 +900,10 @@ def plot_step2_combined(net_node, node_files, draw_error=True, filename="Figure8
 def plot_lfr_step2_combined(p_sensitive_fixed=0.5, alpha_fixed=0.5,
 							 draw_error=True, filename="Figure10"):
 	"""
-	2x2 figure: step2 (balance) on LFR node-coloured scenario only.
-	Left column  : alpha sweep    (x = alpha,          fixed p_sensitive)
-	Right column : p_sensitive sweep (x = lfr_p_sensitive, fixed alpha)
-	Row 1: modularity + balance fairness, mu as hues.
-	Row 2: ncomms (left) + AMI (right), mu as hues.
+	2-row × 3-col figure: step2 (balance) on LFR node-coloured scenario only.
+	  Row A : alpha sweep       (x = alpha,            fixed p_sensitive)
+	  Row B : p_sensitive sweep (x = lfr_p_sensitive,  fixed alpha)
+	  Cols  : Q+F | ncomms | AMI.  mu shown as hues.
 	"""
 	df_raw = pd.read_csv(f"{log_path}/LFR_quality.csv")
 	df_raw = df_raw[(df_raw["lfr_scenario"] == "node") &
@@ -788,98 +913,97 @@ def plot_lfr_step2_combined(p_sensitive_fixed=0.5, alpha_fixed=0.5,
 	df_alpha = df_raw[df_raw["lfr_p_sensitive"] == p_sensitive_fixed]
 	df_psens = df_raw[df_raw["alpha"] == alpha_fixed]
 
-	mu_vals  = sorted(LFR_MU_PLOT)
-	has_ami  = _has_meaningful(df_raw, "ami")
+	mu_vals = sorted(LFR_MU_PLOT)
+	has_ami = _has_meaningful(df_raw, "ami")
+
+	row_data = [
+		("A", df_alpha, "alpha",           "alpha"),
+		("B", df_psens, "lfr_p_sensitive", "p_sensitive"),
+	]
+
+	# Global ncomms range
+	nc_hi_all = max(
+		(df_alpha["ncomms"] + df_alpha.get("ncomms_std", pd.Series(0, index=df_alpha.index))).max(),
+		(df_psens["ncomms"] + df_psens.get("ncomms_std", pd.Series(0, index=df_psens.index))).max(),
+	)
+	nc_pad = max(nc_hi_all * 0.08, 0.5)
 
 	sns.set_style("whitegrid")
-	fig, axs = plt.subplots(2, 2,
-							figsize=(2 * COL_W, 2 * COL_H),
-							sharey="row")
+	fig, axs = plt.subplots(2, 3, figsize=(3 * COL_W, 2 * COL_H * 0.85))
+	axs = np.array(axs).reshape(2, 3)
 
-	def _fill_col(ax_top, ax_bot, df, x_col, xlabel):
-		ax_bot_r = None
-		if has_ami:
-			ax_bot_r = ax_bot.twinx()
-			ax_bot_r.set_ylim(*_padded_01_lim())
-			ax_bot_r.set_ylabel("AMI")
-			ax_bot_r.tick_params(axis="y")
-			ax_bot_r.grid(False)
+	for row_idx, (panel_label, df, x_col, xlabel) in enumerate(row_data):
+		x_ticks   = sorted(df[x_col].unique())
+		is_bottom = (row_idx == 1)
+
+		ax0, ax1, ax2 = axs[row_idx]
+		ax0.text(-0.18, 0.5, panel_label, transform=ax0.transAxes,
+				 fontsize=11, fontweight="bold", va="center", ha="center")
 
 		for mu in mu_vals:
-			df_s = df[df["lfr_mu"] == mu].sort_values(x_col)
-			if df_s.empty:
+			df_mu = df[df["lfr_mu"] == mu].sort_values(x_col)
+			if df_mu.empty:
 				continue
 			mc   = _mu_color(STYLE["modularity"]["color"],    mu, mu_vals)
 			fc   = _mu_color(STYLE["balance_mouflon"]["color"], mu, mu_vals)
 			nc_c = _mu_color(STYLE["ncomms"]["color"],        mu, mu_vals)
+			ac   = _mu_color(STYLE["ami"]["color"],           mu, mu_vals)
 
-			ax_top.plot(df_s[x_col], df_s["modularity"],
-						color=mc, linestyle=STYLE["modularity"]["linestyle"],
-						marker=STYLE["modularity"]["marker"])
-			if draw_error and "modularity_std" in df_s.columns:
-				ax_top.errorbar(df_s[x_col], df_s["modularity"],
-								yerr=df_s["modularity_std"], fmt="none",
-								ecolor=mc, capsize=2)
+			ax0.plot(df_mu[x_col], df_mu["modularity"],
+					 color=mc, linestyle=STYLE["modularity"]["linestyle"],
+					 marker=STYLE["modularity"]["marker"])
+			if draw_error and "modularity_std" in df_mu.columns:
+				ax0.errorbar(df_mu[x_col], df_mu["modularity"],
+							 yerr=df_mu["modularity_std"], fmt="none",
+							 ecolor=mc, capsize=2)
 
-			ax_top.plot(df_s[x_col], df_s["fair_bal"],
-						color=fc, linestyle=STYLE["balance_mouflon"]["linestyle"],
-						marker=STYLE["balance_mouflon"]["marker"])
-			if draw_error and "fair_bal_std" in df_s.columns:
-				ax_top.errorbar(df_s[x_col], df_s["fair_bal"],
-								yerr=df_s["fair_bal_std"], fmt="none",
-								ecolor=fc, capsize=2)
+			ax0.plot(df_mu[x_col], df_mu["fair_bal"],
+					 color=fc, linestyle=STYLE["balance_mouflon"]["linestyle"],
+					 marker=STYLE["balance_mouflon"]["marker"])
+			if draw_error and "fair_bal_std" in df_mu.columns:
+				ax0.errorbar(df_mu[x_col], df_mu["fair_bal"],
+							 yerr=df_mu["fair_bal_std"], fmt="none",
+							 ecolor=fc, capsize=2)
 
-			ax_bot.plot(df_s[x_col], df_s["ncomms"],
-						color=nc_c, linestyle=STYLE["ncomms"]["linestyle"],
-						marker=STYLE["ncomms"]["marker"])
-			if draw_error and "ncomms_std" in df_s.columns:
-				ax_bot.errorbar(df_s[x_col], df_s["ncomms"],
-								yerr=df_s["ncomms_std"], fmt="none",
-								ecolor=nc_c, capsize=2)
+			ax1.plot(df_mu[x_col], df_mu["ncomms"],
+					 color=nc_c, linestyle=STYLE["ncomms"]["linestyle"],
+					 marker=STYLE["ncomms"]["marker"])
+			if draw_error and "ncomms_std" in df_mu.columns:
+				ax1.errorbar(df_mu[x_col], df_mu["ncomms"],
+							 yerr=df_mu["ncomms_std"], fmt="none",
+							 ecolor=nc_c, capsize=2)
 
-			if ax_bot_r is not None and _has_meaningful(df_s, "ami"):
-				ac = _mu_color(STYLE["ami"]["color"], mu, mu_vals)
-				ax_bot_r.plot(df_s[x_col], df_s["ami"],
-							  color=ac, linestyle=STYLE["ami"]["linestyle"],
-							  marker=STYLE["ami"]["marker"])
-				if draw_error and "ami_std" in df_s.columns:
-					ax_bot_r.errorbar(df_s[x_col], df_s["ami"],
-									  yerr=df_s["ami_std"], fmt="none",
-									  ecolor=ac, capsize=2)
+			if has_ami and _has_meaningful(df_mu, "ami"):
+				ax2.plot(df_mu[x_col], df_mu["ami"],
+						 color=ac, linestyle=STYLE["ami"]["linestyle"],
+						 marker=STYLE["ami"]["marker"])
+				if draw_error and "ami_std" in df_mu.columns:
+					ax2.errorbar(df_mu[x_col], df_mu["ami"],
+								 yerr=df_mu["ami_std"], fmt="none",
+								 ecolor=ac, capsize=2)
 
-		x_ticks = sorted(df[x_col].unique())
-		ax_top.set_xticks(x_ticks)
-		ax_top.set_xticklabels([])
-		ax_top.margins(x=0.05)
-		ax_top.set_ylim(*_padded_01_lim())
-		ax_top.autoscale(enable=False, axis="y")
+		for ax, ylabel, ylim in [
+			(ax0, "Score",                 _padded_01_lim()),
+			(ax1, "Number of communities", (-nc_pad, nc_hi_all + nc_pad)),
+			(ax2, "AMI",                   _padded_01_lim()),
+		]:
+			ax.set_xticks(x_ticks)
+			ax.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+			ax.margins(x=0.05)
+			ax.set_ylim(*ylim)
+			ax.autoscale(enable=False, axis="y")
+			ax.set_ylabel(ylabel)
+			if is_bottom:
+				ax.set_xlabel(xlabel)
 
-		nc_max = (df["ncomms"] + df.get("ncomms_std",
-				  pd.Series(0, index=df.index))).max()
-		nc_pad = max(nc_max * 0.08, 0.5)
-		ax_bot.set_xticks(x_ticks)
-		ax_bot.set_xticklabels([f"{v:g}" for v in x_ticks])
-		ax_bot.tick_params(axis="x", labelbottom=True)
-		for lbl in ax_bot.get_xticklabels():
-			lbl.set_visible(True)
-		ax_bot.set_xlabel(xlabel)
-		ax_bot.margins(x=0.05)
-		ax_bot.set_ylim(-nc_pad, nc_max + nc_pad)
-		ax_bot.autoscale(enable=False, axis="y")
-		ax_bot.tick_params(axis="y")
+		if not has_ami:
+			ax2.set_visible(False)
 
-	_fill_col(axs[0, 0], axs[1, 0], df_alpha, "alpha",           "alpha")
-	_fill_col(axs[0, 1], axs[1, 1], df_psens, "lfr_p_sensitive", "p_sensitive")
-	# Hardcode ncomms bottom row: 0-25 with padding
-	for ax in [axs[1, 0], axs[1, 1]]:
-		ax.set_ylim(-2.0, 27.0)
-		ax.autoscale(enable=False, axis="y")
-
-	axs[0, 0].set_ylabel("Score")
-	axs[1, 0].set_ylabel("Number of communities")
-	for i, label in enumerate(["A", "B"]):
-		axs[0, i].text(0.02, 0.97, label, transform=axs[0, i].transAxes,
-					   fontsize=10, fontweight="bold", va="top", ha="left")
+	# Hardcode ncomms: 0-25 with padding, multiples of 5 only
+	for row_idx in range(2):
+		axs[row_idx, 1].set_ylim(-2.0, 27.0)
+		axs[row_idx, 1].set_yticks([0, 5, 10, 15, 20, 25])
+		axs[row_idx, 1].autoscale(enable=False, axis="y")
 
 	mu_handles = [
 		mlines.Line2D([], [], color=_mu_color("tab:red", mu, mu_vals),
@@ -895,9 +1019,9 @@ def plot_lfr_step2_combined(p_sensitive_fixed=0.5, alpha_fixed=0.5,
 		metric_handles.append(mlines.Line2D([], [], **STYLE["ami"]))
 
 	fig.legend(handles=mu_handles + metric_handles, loc="upper center",
-			   ncol=min(len(mu_handles) + len(metric_handles), 5),
-			   bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=min(len(mu_handles) + len(metric_handles), 6),
+			   bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -911,122 +1035,114 @@ def plot_lfr_quality_node_comm(strategy, fairness_col, fairness_style,
 								x_col="alpha", alpha_fixed=0.5,
 								filename="Figure_LFR_node_comm"):
 	"""
-	2x2 figure: left = node-coloured scenario, right = comm-coloured scenario.
-	Single strategy shown (step2 or hybrid). No panel titles.
-	x_col="alpha"       : alpha sweep at fixed p_sensitive
+	2-row × 3-col figure: rows A/B = node-coloured / comm-coloured scenario.
+	Columns: Q+F | ncomms | AMI.  mu shown as hues.
+	x_col="alpha"           : alpha sweep at fixed p_sensitive
 	x_col="lfr_p_sensitive" : p_sensitive sweep at fixed alpha=alpha_fixed
-	mu shown as hues.
 	"""
 	if x_col == "alpha":
 		df_node = _lfr_load("node", p_sensitive)
 		df_comm = _lfr_load("comm", p_sensitive)
 	else:
-		# p_sensitive sweep: load all p_sensitive values at fixed alpha
-		df_raw = pd.read_csv(f"{log_path}/LFR_quality.csv")
-		df_raw = df_raw[(df_raw["lfr_mu"].isin(LFR_MU_PLOT)) &
-						(df_raw["alpha"] == alpha_fixed)]
+		df_raw  = pd.read_csv(f"{log_path}/LFR_quality.csv")
+		df_raw  = df_raw[(df_raw["lfr_mu"].isin(LFR_MU_PLOT)) &
+						 (df_raw["alpha"] == alpha_fixed)]
 		df_node = df_raw[df_raw["lfr_scenario"] == "node"]
 		df_comm = df_raw[df_raw["lfr_scenario"] == "comm"]
 
-	# Filter to the requested strategy + louvain reference
 	mu_vals = sorted(df_node["lfr_mu"].unique())
-
-	mouflon = [strategy]
 	nc_lo_n, nc_hi_n = get_ncomms_limits([df_node[df_node["strategy"] == strategy]])
 	nc_lo_c, nc_hi_c = get_ncomms_limits([df_comm[df_comm["strategy"] == strategy]])
 	nc_lo = min(nc_lo_n, nc_lo_c)
 	nc_hi = max(nc_hi_n, nc_hi_c)
+	nc_pad = max((nc_hi - nc_lo) * 0.08, 0.5)
+	nc_ylim = (-nc_pad, nc_hi + nc_pad)
 
 	has_ami = _has_meaningful(df_node, "ami") or _has_meaningful(df_comm, "ami")
+	xlabel  = x_col.replace("lfr_", "")
 
 	sns.set_style("whitegrid")
-	fig, axs = plt.subplots(2, 2,
-							figsize=(2 * COL_W, 2 * COL_H * 0.8),
-							sharex="col", sharey="row")
+	fig, axs = plt.subplots(2, 3,
+							figsize=(3 * COL_W, 2 * COL_H * 0.85),
+							sharey="col")
+	axs = np.array(axs).reshape(2, 3)
 
-	for col_idx, (df_all, panel_label) in enumerate(
+	for row_idx, (df_all, panel_label) in enumerate(
 			[(df_node, "A"), (df_comm, "B")]):
 
-		ax_top = axs[0, col_idx]
-		ax_bot = axs[1, col_idx]
+		df_s_all = df_all[df_all["strategy"] == strategy]
+		x_ticks  = sorted(df_s_all[x_col].unique())
+		is_bottom = (row_idx == 1)
 
-		ax_bot_r = None
-		if has_ami:
-			ax_bot_r = ax_bot.twinx()
-			ax_bot_r.set_ylim(*_padded_01_lim())
-			ax_bot_r.set_ylabel("AMI")
-			ax_bot_r.tick_params(axis="y")
-			ax_bot_r.grid(False)
+		ax0, ax1, ax2 = axs[row_idx]
+
+		ax0.text(-0.18, 0.5, panel_label, transform=ax0.transAxes,
+				 fontsize=11, fontweight="bold", va="center", ha="center")
 
 		for mu in mu_vals:
-			df_s = (df_all[(df_all["strategy"] == strategy) &
-						   (df_all["lfr_mu"] == mu)]
-					.sort_values(x_col))
-			if df_s.empty:
+			df_mu = df_s_all[df_s_all["lfr_mu"] == mu].sort_values(x_col)
+			if df_mu.empty:
 				continue
+			mc   = _mu_color(STYLE["modularity"]["color"],   mu, mu_vals)
+			fc   = _mu_color(fairness_style["color"],        mu, mu_vals)
+			nc_c = _mu_color(STYLE["ncomms"]["color"],       mu, mu_vals)
+			ac   = _mu_color(STYLE["ami"]["color"],          mu, mu_vals)
 
-			mc  = _mu_color(STYLE["modularity"]["color"], mu, mu_vals)
-			fc  = _mu_color(fairness_style["color"],     mu, mu_vals)
-			nc_c = _mu_color(STYLE["ncomms"]["color"],   mu, mu_vals)
+			# col 0: Q + F
+			ax0.plot(df_mu[x_col], df_mu["modularity"],
+					 color=mc, linestyle=STYLE["modularity"]["linestyle"],
+					 marker=STYLE["modularity"]["marker"])
+			if draw_error and "modularity_std" in df_mu.columns:
+				ax0.errorbar(df_mu[x_col], df_mu["modularity"],
+							 yerr=df_mu["modularity_std"], fmt="none",
+							 ecolor=mc, capsize=2)
+			ax0.plot(df_mu[x_col], df_mu[fairness_col],
+					 color=fc, linestyle=fairness_style["linestyle"],
+					 marker=fairness_style["marker"])
+			if draw_error and f"{fairness_col}_std" in df_mu.columns:
+				ax0.errorbar(df_mu[x_col], df_mu[fairness_col],
+							 yerr=df_mu[f"{fairness_col}_std"], fmt="none",
+							 ecolor=fc, capsize=2)
 
-			ax_top.plot(df_s[x_col], df_s["modularity"],
-						color=mc, linestyle=STYLE["modularity"]["linestyle"],
-						marker=STYLE["modularity"]["marker"])
-			if draw_error and "modularity_std" in df_s.columns:
-				ax_top.errorbar(df_s[x_col], df_s["modularity"],
-								yerr=df_s["modularity_std"], fmt="none",
-								ecolor=mc, capsize=2)
+			# col 1: ncomms
+			ax1.plot(df_mu[x_col], df_mu["ncomms"],
+					 color=nc_c, linestyle=STYLE["ncomms"]["linestyle"],
+					 marker=STYLE["ncomms"]["marker"])
+			if draw_error and "ncomms_std" in df_mu.columns:
+				ax1.errorbar(df_mu[x_col], df_mu["ncomms"],
+							 yerr=df_mu["ncomms_std"], fmt="none",
+							 ecolor=nc_c, capsize=2)
 
-			ax_top.plot(df_s[x_col], df_s[fairness_col],
-						color=fc, linestyle=fairness_style["linestyle"],
-						marker=fairness_style["marker"])
-			if draw_error and f"{fairness_col}_std" in df_s.columns:
-				ax_top.errorbar(df_s[x_col], df_s[fairness_col],
-								yerr=df_s[f"{fairness_col}_std"], fmt="none",
-								ecolor=fc, capsize=2)
+			# col 2: AMI
+			if has_ami and _has_meaningful(df_mu, "ami"):
+				ax2.plot(df_mu[x_col], df_mu["ami"],
+						 color=ac, linestyle=STYLE["ami"]["linestyle"],
+						 marker=STYLE["ami"]["marker"])
+				if draw_error and "ami_std" in df_mu.columns:
+					ax2.errorbar(df_mu[x_col], df_mu["ami"],
+								 yerr=df_mu["ami_std"], fmt="none",
+								 ecolor=ac, capsize=2)
 
-			ax_bot.plot(df_s[x_col], df_s["ncomms"],
-						color=nc_c, linestyle=STYLE["ncomms"]["linestyle"],
-						marker=STYLE["ncomms"]["marker"])
-			if draw_error and "ncomms_std" in df_s.columns:
-				ax_bot.errorbar(df_s[x_col], df_s["ncomms"],
-								yerr=df_s["ncomms_std"], fmt="none",
-								ecolor=nc_c, capsize=2)
+		for ax, ylabel, ylim in [
+			(ax0, "Score",                  _padded_01_lim()),
+			(ax1, "Number of communities",  nc_ylim),
+			(ax2, "AMI",                    _padded_01_lim()),
+		]:
+			ax.set_xticks(x_ticks)
+			ax.set_xticklabels([f"{v:g}" for v in x_ticks] if is_bottom else [])
+			ax.margins(x=0.05)
+			ax.set_ylim(*ylim)
+			ax.autoscale(enable=False, axis="y")
+			ax.set_ylabel(ylabel)
+			if is_bottom:
+				ax.set_xlabel(xlabel)
 
-			if ax_bot_r is not None and _has_meaningful(df_s, "ami"):
-				ac = _mu_color(STYLE["ami"]["color"], mu, mu_vals)
-				ax_bot_r.plot(df_s[x_col], df_s["ami"],
-							  color=ac, linestyle=STYLE["ami"]["linestyle"],
-							  marker=STYLE["ami"]["marker"])
-				if draw_error and "ami_std" in df_s.columns:
-					ax_bot_r.errorbar(df_s[x_col], df_s["ami"],
-									  yerr=df_s["ami_std"], fmt="none",
-									  ecolor=ac, capsize=2)
+		# Force multiples-of-5 ticks on ncomms axis
+		lo, hi = nc_ylim
+		ax1.set_yticks([v for v in range(0, int(hi) + 1, 5) if v >= 0])
 
-		x_ticks = sorted(df_all[df_all["strategy"] == strategy][x_col].unique())
-		ax_top.set_xticks(x_ticks)
-		ax_top.set_xticklabels([])
-		ax_top.margins(x=0.05)
-		ax_top.set_ylim(*_padded_01_lim())
-		ax_top.autoscale(enable=False, axis="y")
-		ax_top.text(0.02, 0.97, panel_label, transform=ax_top.transAxes,
-					fontsize=10, fontweight="bold", va="top", ha="left")
-		if col_idx == 0:
-			ax_top.set_ylabel("Score")
-
-		ax_bot.set_xticks(x_ticks)
-		ax_bot.set_xticklabels([f"{v:g}" for v in x_ticks])
-		ax_bot.tick_params(axis="x", labelbottom=True)
-		for lbl in ax_bot.get_xticklabels():
-			lbl.set_visible(True)
-		ax_bot.set_xlabel(x_col.replace('lfr_', ''))
-		nc_bot_pad = max((nc_hi - nc_lo) * 0.08, 0.5)
-		ax_bot.margins(x=0.05)
-		ax_bot.set_ylim(-nc_bot_pad, nc_hi + nc_bot_pad)
-		ax_bot.autoscale(enable=False, axis="y")
-		ax_bot.tick_params(axis="y")
-		if col_idx == 0:
-			ax_bot.set_ylabel("Number of communities")
+		if not has_ami:
+			ax2.set_visible(False)
 
 	mu_handles = [
 		mlines.Line2D([], [], color=_mu_color("tab:red", mu, mu_vals),
@@ -1045,9 +1161,9 @@ def plot_lfr_quality_node_comm(strategy, fairness_col, fairness_style,
 		metric_handles.append(mlines.Line2D([], [], **STYLE["ami"]))
 
 	fig.legend(handles=mu_handles + metric_handles, loc="upper center",
-			   ncol=min(len(mu_handles) + len(metric_handles), 5),
-			   bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=min(len(mu_handles) + len(metric_handles), 6),
+			   bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1185,7 +1301,7 @@ def _lfr_legend(mu_vals, has_ami, has_nf1=False):
 	"""Shared legend for all LFR quality figures. NF1 and Louvain not shown."""
 	mu_h = [
 		mlines.Line2D([], [], color=_mu_color("tab:red", mu, mu_vals),
-					  linestyle="-", marker="o", label=f"μ={mu}")
+					  linestyle="-", marker="o", label=f"mu={mu}")
 		for mu in mu_vals
 	]
 	metric_h = [
@@ -1231,8 +1347,8 @@ def plot_lfr_quality(scenario="node", p_sensitive=0.5,
 	fig.supxlabel("alpha")
 
 	fig.legend(handles=_lfr_legend(mu_vals, has_ami, has_nf1),
-			   loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1274,8 +1390,8 @@ def plot_lfr_quality_psensitive(scenario="node",
 	fig.supxlabel("p_sensitive")
 
 	fig.legend(handles=_lfr_legend(mu_vals, has_ami, has_nf1),
-			   loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1339,8 +1455,8 @@ def plot_lfr_quality_scenarios(p_sensitive=0.5,
 	fig.supxlabel("alpha")
 
 	fig.legend(handles=_lfr_legend(mu_vals, has_ami, has_nf1),
-			   loc="upper center", ncol=5, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   loc="upper center", ncol=5, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1352,86 +1468,108 @@ def plot_lfr_quality_scenarios(p_sensitive=0.5,
 def plot_city_networks(city_files: dict, draw_error=True, filename="Figure_city"):
 	"""
 	Quality figure for city networks.
-	Row 1: modularity + fairness (hybrid only) + Louvain reference line.
-	Row 2: ncomms (left axis) + ami_louvain (right axis, 0-1).
+	2 rows × 3 cols grid.
+	  Rows    : one per city (A = first city, B = second city).
+	  Columns : col 0 = Q vs F (modularity + fairness + Louvain ref)
+	            col 1 = Number of communities
+	            col 2 = AMI between MOUFLON and Louvain partitions
+	Legend placed inside the figure; no outside legend.
 	"""
 	import string
 
 	sns.set_style("whitegrid")
-	n = len(city_files)
+	city_items = list(city_files.items())
+	n_cities   = len(city_items)          # typically 2
 
-	fig, axs = plt.subplots(2, n,
-							figsize=(COL_W * n, 2 * COL_H),
-							sharex="col")
-	axs = np.array(axs).reshape(2, n)
+	# sharey within each column so the same metric is comparable across cities
+	fig, axs = plt.subplots(n_cities, 3,
+							figsize=(3 * COL_W, n_cities * COL_H),
+							sharey="col")
+	axs = np.array(axs).reshape(n_cities, 3)
 
-	for col, (city_name, csv_path) in enumerate(city_files.items()):
-		df       = pd.read_csv(csv_path)
-		df_h     = df[df["strategy"] == "hybrid"].sort_values("alpha")
-		df_lou   = df[df["strategy"] == "louvain"]
+	# Compute a global ncomms range across all cities so col-1 is comparable
+	all_dfs = []
+	for _, csv_path in city_items:
+		df_tmp = pd.read_csv(csv_path)
+		all_dfs.append(df_tmp[df_tmp["strategy"] == "hybrid"])
+	nc_lo_g, nc_hi_g = get_ncomms_limits(all_dfs)
+	nc_pad_g = max((nc_hi_g - nc_lo_g) * 0.08, 0.5)
 
-		nc_lo, nc_hi = get_ncomms_limits([df_h])
+	for row, (city_name, csv_path) in enumerate(city_items):
+		df     = pd.read_csv(csv_path)
+		df_h   = df[df["strategy"] == "hybrid"].sort_values("alpha")
+		df_lou = df[df["strategy"] == "louvain"]
 
-		ax_top = axs[0, col]
-		ax_bot = axs[1, col]
+		alpha_ticks     = sorted(df_h["alpha"].unique())
+		alpha_ticklabels = [f"{v:g}" for v in alpha_ticks]
+		is_bottom = (row == n_cities - 1)
 
-		# ── Row 1 ─────────────────────────────────────────────────────────
-		ax_top.plot(df_h["alpha"], df_h["modularity"], **STYLE["modularity"])
-		if draw_error:
-			ax_top.errorbar(df_h["alpha"], df_h["modularity"],
-							yerr=df_h["mod_std"], fmt="none",
-							ecolor=STYLE["modularity"]["color"], capsize=2)
-		ax_top.plot(df_h["alpha"], df_h["fair_exp"], **STYLE["prop_mouflon"])
-		if draw_error:
-			ax_top.errorbar(df_h["alpha"], df_h["fair_exp"],
-							yerr=df_h["fair_exp_std"], fmt="none",
-							ecolor=STYLE["prop_mouflon"]["color"], capsize=2)
+		# ── panel label + row title ────────────────────────────────────────
+		axs[row, 0].text(-0.18, 0.5, string.ascii_uppercase[row],
+						 transform=axs[row, 0].transAxes,
+						 fontsize=11, fontweight="bold",
+						 va="center", ha="center", rotation=0)
+		axs[row, 0].set_title(city_name, fontsize=9, loc="left", pad=3)
+
+		# ── Col 0: Q vs F ─────────────────────────────────────────────────
+		ax0 = axs[row, 0]
+		ax0.plot(df_h["alpha"], df_h["modularity"], **STYLE["modularity"])
+		if draw_error and "mod_std" in df_h.columns:
+			ax0.errorbar(df_h["alpha"], df_h["modularity"],
+						 yerr=df_h["mod_std"], fmt="none",
+						 ecolor=STYLE["modularity"]["color"], capsize=2)
+		ax0.plot(df_h["alpha"], df_h["fair_exp"], **STYLE["prop_mouflon"])
+		if draw_error and "fair_exp_std" in df_h.columns:
+			ax0.errorbar(df_h["alpha"], df_h["fair_exp"],
+						 yerr=df_h["fair_exp_std"], fmt="none",
+						 ecolor=STYLE["prop_mouflon"]["color"], capsize=2)
 		if not df_lou.empty:
-			ax_top.axhline(df_lou["modularity"].iloc[0],
-						   color=STYLE["louvain"]["color"],
-						   linestyle=":",
-						   linewidth=1.2, alpha=0.8)
-		ax_top.set_xticks(sorted(df_h["alpha"].unique()))
-		ax_top.set_xticklabels([])
-		ax_top.margins(x=0.05)
-		ax_top.set_ylim(*_padded_01_lim())
-		ax_top.autoscale(enable=False, axis="y")
-		ax_top.set_title(city_name, fontsize=9)
-		ax_top.set_ylabel("Score")
-		ax_top.text(0.02, 0.97, string.ascii_uppercase[col],
-					transform=ax_top.transAxes, fontsize=10,
-					fontweight="bold", va="top", ha="left")
+			ax0.axhline(df_lou["modularity"].iloc[0],
+						color=STYLE["louvain"]["color"],
+						linestyle=":", linewidth=1.2, alpha=0.8)
+		ax0.set_xticks(alpha_ticks)
+		ax0.set_xticklabels(alpha_ticklabels if is_bottom else [])
+		ax0.margins(x=0.05)
+		ax0.set_ylim(*_padded_01_lim())
+		ax0.autoscale(enable=False, axis="y")
+		ax0.set_ylabel("Score")
+		if row == 0:
+			pass  # no column titles
 
-		# ── Row 2 ─────────────────────────────────────────────────────────
-		ax_bot.plot(df_h["alpha"], df_h["ncomms"], **STYLE["ncomms"])
+		# ── Col 1: Number of communities ──────────────────────────────────
+		ax1 = axs[row, 1]
+		ax1.plot(df_h["alpha"], df_h["ncomms"], **STYLE["ncomms"])
 		if draw_error and "ncomms_std" in df_h.columns:
-			ax_bot.errorbar(df_h["alpha"], df_h["ncomms"],
-							yerr=df_h["ncomms_std"], fmt="none",
-							ecolor=STYLE["ncomms"]["color"], capsize=2)
-		nc_bot_pad = max((nc_hi - nc_lo) * 0.08, 0.5)
-		ax_bot.tick_params(axis="y")
-		ax_bot.set_ylabel("Number of communities")
-		ax_bot.margins(x=0.05)
-		ax_bot.set_ylim(-nc_bot_pad, nc_hi + nc_bot_pad)
-		ax_bot.autoscale(enable=False, axis="y")
+			ax1.errorbar(df_h["alpha"], df_h["ncomms"],
+						 yerr=df_h["ncomms_std"], fmt="none",
+						 ecolor=STYLE["ncomms"]["color"], capsize=2)
+		ax1.set_xticks(alpha_ticks)
+		ax1.set_xticklabels(alpha_ticklabels if is_bottom else [])
+		ax1.margins(x=0.05)
+		ax1.set_ylim(-nc_pad_g, nc_hi_g + nc_pad_g)
+		ax1.autoscale(enable=False, axis="y")
+		ax1.set_ylabel("Number of communities")
+		if row == 0:
+			pass  # no column titles
 
-		if ("ami_louvain" in df_h.columns and
-				not df_h["ami_louvain"].isna().all()):
-			ax_r = ax_bot.twinx()
-			ax_r.set_ylim(*_padded_01_lim())
-			ax_r.set_ylabel("AMI vs Louvain")
-			ax_r.grid(False)
-			ax_r.plot(df_h["alpha"], df_h["ami_louvain"], **STYLE["ami"])
+		# ── Col 2: AMI between MOUFLON and Louvain partitions ─────────────
+		ax2 = axs[row, 2]
+		has_ami_lou = ("ami_louvain" in df_h.columns and
+					   not df_h["ami_louvain"].isna().all())
+		if has_ami_lou:
+			ax2.plot(df_h["alpha"], df_h["ami_louvain"], **STYLE["ami"])
 			if draw_error and "ami_louvain_std" in df_h.columns:
-				ax_r.errorbar(df_h["alpha"], df_h["ami_louvain"],
-							  yerr=df_h["ami_louvain_std"], fmt="none",
-							  ecolor=STYLE["ami"]["color"], capsize=2)
-
-		ax_bot.set_xticks(sorted(df_h["alpha"].unique()))
-		ax_bot.set_xticklabels([f"{v:g}" for v in sorted(df_h["alpha"].unique())])
-		ax_bot.tick_params(axis="x", labelbottom=True)
-		for lbl in ax_bot.get_xticklabels():
-			lbl.set_visible(True)
+				ax2.errorbar(df_h["alpha"], df_h["ami_louvain"],
+							 yerr=df_h["ami_louvain_std"], fmt="none",
+							 ecolor=STYLE["ami"]["color"], capsize=2)
+		ax2.set_xticks(alpha_ticks)
+		ax2.set_xticklabels(alpha_ticklabels if is_bottom else [])
+		ax2.margins(x=0.05)
+		ax2.set_ylim(*_padded_01_lim())
+		ax2.autoscale(enable=False, axis="y")
+		ax2.set_ylabel("AMI")
+		if row == 0:
+			pass  # no column titles
 
 	fig.supxlabel("alpha")
 
@@ -1440,11 +1578,11 @@ def plot_city_networks(city_files: dict, draw_error=True, filename="Figure_city"
 		mlines.Line2D([], [], **STYLE["prop_mouflon"]),
 		mlines.Line2D([], [], **STYLE["louvain"]),
 		mlines.Line2D([], [], **STYLE["ncomms"]),
-		mlines.Line2D([], [], **{**STYLE["ami"], "label": "AMI vs Louvain"}),
+		mlines.Line2D([], [], **{**STYLE["ami"], "label": "AMI"}),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=5, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=5, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.92])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1564,8 +1702,8 @@ def plot_multiple_alpha_real(networks, draw_error=True, filename="Figure9"):
 		mlines.Line2D([], [], **STYLE["ncomms"]),
 	]
 	fig.legend(handles=handles, loc="upper center",
-			   ncol=5, bbox_to_anchor=(0.5, 1.02))
-	fig.tight_layout(rect=[0, 0, 1, 0.95])
+			   ncol=5, bbox_to_anchor=(0.5, 1.02), fontsize=10, handlelength=2.5, handletextpad=0.5, columnspacing=1.2)
+	fig.tight_layout(rect=[0, 0, 1, 0.93])
 	fig.savefig(f"{plot_path}{filename}.png", dpi=300, bbox_inches="tight")
 	plt.close(fig)
 
@@ -1625,7 +1763,7 @@ def main():
 	plot_scalability_combined(
 		df_er_size=main_df,
 		df_er_density=main_df1,
-		filename="Figure3"
+		filename="fig3"
 	)
 
 
@@ -1642,43 +1780,43 @@ def main():
 	# --- Figure 4
 	plot_mouflon_alpha("color-node_1000_r01_K2_c05",
 					   "color-full_1000_r01_K2_c05",
-					   filename="Figure4")
+					   filename="fig4")
 
 	# --- Figure 5: LFR quality - prop_balance, node vs comm
 	plot_lfr_quality_node_comm(
 		strategy="hybrid", fairness_col="fair_exp",
 		fairness_style=STYLE["prop_mouflon"],
-		p_sensitive=0.5, filename="Figure5")
+		p_sensitive=0.5, filename="fig5")
 
 
 	# --- Figure 6: p_sensitive sweep
-	plot_mouflon_psensitive(node_files, full_files, filename="Figure6")
+	plot_mouflon_psensitive(node_files, full_files, filename="fig6")
 
 	# --- Figure 7: LFR p_sensitive sweep, prop_balance, node vs comm
 	plot_lfr_quality_node_comm(
 		strategy="hybrid", fairness_col="fair_exp",
 		fairness_style=STYLE["prop_mouflon"],
 		x_col="lfr_p_sensitive", alpha_fixed=0.5,
-		filename="Figure7")
+		filename="fig7")
 
 
 	# --- Figure 8 combined: step2 (balance), alpha sweep / p_sensitive sweep
-	plot_step2_combined("color-node_1000_r01_K2_c05", node_files, filename="Figure8")
+	plot_step2_combined("color-node_1000_r01_K2_c05", node_files, filename="fig8")
 
 
 	# --- Figure 9: LFR step2 (balance), alpha sweep / p_sensitive sweep (node only)
 	plot_lfr_step2_combined(p_sensitive_fixed=0.5, alpha_fixed=0.5,
-							filename="Figure9")
+							filename="fig9")
 
 
 
 	# --- Figure 10: A/B testing, city networks
-	plot_city_networks(city_files, draw_error=True, filename="Figure10")
+	plot_city_networks(city_files, draw_error=True, filename="fig10")
 
 	# --- Figure 11: drawing prop_fairness example ---
 
 	# --- Figure 12: real social networks
-	plot_multiple_alpha_real(realSN_list, draw_error=True, filename="Figure12")
+	plot_multiple_alpha_real(realSN_list, draw_error=True, filename="fig12")
 
 
 if __name__ == "__main__":
